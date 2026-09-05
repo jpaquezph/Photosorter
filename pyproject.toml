@@ -1,0 +1,27 @@
+[project]
+name = "photosorter"
+version = "0.1.0"
+description = "Aplicacion de escritorio para organizar fotografias por orientacion"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyside6>=6.7",
+    "pillow>=10.4",
+    "rawpy>=0.21",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/photosorter"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

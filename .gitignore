@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Entornos virtuales
+.venv/
+venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging
+build/
+dist/
+*.spec
+
+# Dataset RAW local (no se versiona)
+tests/fixtures/raw/*
+!tests/fixtures/raw/README.md
+
+# Editores / SO
+.vscode/
+.idea/
+Thumbs.db
