@@ -10,6 +10,9 @@ dependencies = [
     "rawpy>=0.21",
 ]
 
+[project.scripts]
+photosorter = "photosorter.__main__:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",
