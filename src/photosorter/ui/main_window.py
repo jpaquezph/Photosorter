@@ -2,11 +2,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QImage,
+    QMouseEvent,
+    QPixmap,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -14,6 +24,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -38,6 +49,180 @@ from photosorter.infrastructure.image.standard_image_reader import StandardImage
 from photosorter.ui.conflict_dialog import ConflictDialog
 from photosorter.ui.qt_conflict_prompt import QtConflictPrompt
 from photosorter.ui.sorter_worker import SorterWorker
+from photosorter.ui.title_bar import BAR_HEIGHT, TitleBar
+
+# Paleta "dark, moderna y profesional": fondo, panel, tarjeta/control, borde
+# sutil, azul principal, texto primario/secundario y rojo de error/cierre.
+# Hardcodeada a proposito: es la identidad visual de la app, no un valor de
+# configuracion. Las transparencias reales del tema se mantienen bajas
+# (~5-10%), salvo el glow decorativo del bloque de resultados.
+BG = "#07111F"
+PANEL = "#0B1626"
+CARD = "#101D2F"
+BORDER = "#294563"
+ACCENT = "#6195E5"
+ACCENT_HOVER = "#4f7fce"
+TEXT_PRIMARY = "#F2F5F8"
+TEXT_SECONDARY = "#B8C2CF"
+ERROR = "#E45B62"
+ERROR_HOVER = "#c94850"
+
+PROGRESS_GRADIENT_START = "#f26110"
+PROGRESS_GRADIENT_END = "#f48229"
+
+BUTTON_RADIUS = 10
+GALLERY_NAV_SIZE = 40
+
+BODY_MARGIN = 16
+_RESIZE_MARGIN = 6
+
+# Tamanios de la vista previa y de cada celda de la mini galeria, como
+# fraccion del area total de la ventana (ancho x alto). La vista previa se
+# agranda un poco respecto del pedido original (12%) para que sea el
+# elemento visualmente protagonista de la seccion.
+PREVIEW_AREA_FRACTION = 0.18
+THUMBNAIL_AREA_FRACTION = 0.013
+# "Procesando ahora" + "Galeria" se tratan como una unica seccion que ocupa
+# ~40% del area total de la ventana.
+MEDIA_SECTION_AREA_FRACTION = 0.40
+GALLERY_COLUMNS = 3
+GALLERY_ROWS = 2
+GALLERY_SIZE = GALLERY_COLUMNS * GALLERY_ROWS  # 6 miniaturas, seccion "Grilla de Miniaturas"
+
+# Stylesheet a nivel de aplicacion (ver __main__.py): asi los dialogos
+# (ConflictDialog, QMessageBox) heredan la misma paleta sin duplicar reglas.
+STYLE_SHEET = f"""
+QWidget#appRoot, QDialog, QMessageBox {{
+    background-color: {BG};
+}}
+QPushButton {{
+    background-color: {ACCENT};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {ACCENT};
+    border-radius: {BUTTON_RADIUS}px;
+    padding: 6px 14px;
+}}
+QPushButton:hover {{
+    background-color: {ACCENT_HOVER};
+    border-color: {ACCENT_HOVER};
+}}
+QPushButton:disabled {{
+    background-color: {BORDER};
+    border-color: {BORDER};
+    color: {TEXT_SECONDARY};
+}}
+QPushButton#galleryNavButton {{
+    background-color: {CARD};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER};
+    border-radius: {GALLERY_NAV_SIZE // 2}px;
+    padding: 0px;
+    font-weight: bold;
+}}
+QPushButton#galleryNavButton:hover {{
+    border-color: {ACCENT};
+    color: {ACCENT};
+    background-color: {CARD};
+}}
+QPushButton#galleryNavButton:disabled {{
+    color: {TEXT_SECONDARY};
+    border-color: {BORDER};
+    background-color: {CARD};
+}}
+QLineEdit {{
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    padding: 3px 6px;
+    background-color: {CARD};
+    color: {TEXT_PRIMARY};
+}}
+QCheckBox {{
+    background: transparent;
+    color: {TEXT_PRIMARY};
+}}
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {BORDER};
+    border-radius: 3px;
+    background-color: {CARD};
+}}
+QCheckBox::indicator:checked {{
+    background-color: {ACCENT};
+    border-color: {ACCENT};
+}}
+QFrame#leftPanel, QFrame#mediaFrame {{
+    background-color: {PANEL};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+}}
+QFrame#previewStage {{
+    background-color: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+}}
+QFrame#resultsFrame {{
+    background-color: {CARD};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+}}
+QLabel {{
+    background: transparent;
+    color: {TEXT_PRIMARY};
+}}
+QLabel#panelTitle {{
+    color: {ACCENT};
+    font-weight: bold;
+}}
+QLabel#secondaryLabel {{
+    color: {TEXT_SECONDARY};
+}}
+QProgressBar {{
+    border: 1px solid {BORDER};
+    border-radius: 4px;
+    text-align: center;
+    color: {TEXT_PRIMARY};
+    background-color: {CARD};
+}}
+QProgressBar::chunk {{
+    background-color: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 0,
+        stop: 0 {PROGRESS_GRADIENT_START}, stop: 1 {PROGRESS_GRADIENT_END}
+    );
+    border-radius: 3px;
+}}
+"""
+
+
+class _ThumbnailCell(QLabel):
+    """Una celda cuadrada de la mini galeria (seccion 'Grilla de Miniaturas').
+
+    Bordes sutiles por defecto; la celda seleccionada (click del usuario)
+    resalta con el azul principal de la paleta.
+    """
+
+    clicked = Signal(int)
+
+    def __init__(self, slot: int) -> None:
+        super().__init__()
+        self._slot = slot
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setScaledContents(False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.set_selected(False)
+
+    def set_selected(self, selected: bool) -> None:
+        border_color = ACCENT if selected else BORDER
+        border_width = 2 if selected else 1
+        self.setStyleSheet(
+            f"background-color: {CARD}; color: {TEXT_SECONDARY};"
+            f"border: {border_width}px solid {border_color}; border-radius: 4px;"
+        )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - override de Qt
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._slot)
+        super().mousePressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -47,12 +232,19 @@ class MainWindow(QMainWindow):
     (SAD, seccion 4.1): arma AppSettings, corre SorterService en un
     SorterWorker (QThread) y solo actualiza widgets desde los slots que Qt
     entrega en el hilo principal.
+
+    Ventana sin marco nativo (ver ui/title_bar.py): se necesita control por
+    boton sobre color (la cruz de cerrar siempre en rojo, distinta del resto),
+    algo que el chrome de Windows no permite. Arrastrar los bordes
+    redimensiona via QWindow.startSystemResize().
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("PhotoSorter")
-        self.resize(480, 320)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        self.resize(1040, 680)
+        self.setMinimumSize(860, 560)
 
         self._image_reader = CompositeImageReader([RawImageReader(), StandardImageReader()])
         self._conflict_prompt = QtConflictPrompt(self)
@@ -61,20 +253,91 @@ class MainWindow(QMainWindow):
         self._worker: SorterWorker | None = None
         self._error_count = 0
 
+        # Historial de (Photo, QImage | None) en el orden en que se van
+        # procesando: alimenta la vista previa y la mini galeria.
+        self._history: list[tuple[Photo, QImage | None]] = []
+        self._gallery_offset = 0
+        self._gallery_follow = True
+        # None = seguir mostrando la ultima foto procesada; si el usuario
+        # hace click en una miniatura, queda fijada esa seleccion.
+        self._selected_index: int | None = None
+
         self._build_ui()
+        self._apply_media_sizes()
 
     def _build_ui(self) -> None:
         central = QWidget(self)
+        central.setObjectName("appRoot")
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        outer_layout = QVBoxLayout(central)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self._title_bar = TitleBar("PhotoSorter")
+        self._title_bar.minimize_clicked.connect(self.showMinimized)
+        self._title_bar.maximize_clicked.connect(self._toggle_maximize)
+        self._title_bar.close_clicked.connect(self.close)
+        outer_layout.addWidget(self._title_bar)
+
+        body = QWidget()
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(BODY_MARGIN, BODY_MARGIN, BODY_MARGIN, BODY_MARGIN)
+        body_layout.setSpacing(BODY_MARGIN)
+        body_layout.addWidget(self._build_left_panel(), 1)
+        body_layout.addWidget(self._build_media_section(), 0)
+        outer_layout.addWidget(body, 1)
+
+    def _toggle_maximize(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    # --- Redimensionar arrastrando los bordes (ventana sin marco nativo) ---
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and not self.isMaximized():
+            edges = self._resize_edges(event.position().toPoint())
+            window = self.windowHandle()
+            if edges and window is not None:
+                window.startSystemResize(edges)
+                return
+        super().mousePressEvent(event)
+
+    def _resize_edges(self, pos) -> Qt.Edge:
+        edges = Qt.Edge(0)
+        rect = self.rect()
+        margin = _RESIZE_MARGIN
+        if pos.x() <= margin:
+            edges |= Qt.Edge.LeftEdge
+        elif pos.x() >= rect.width() - margin:
+            edges |= Qt.Edge.RightEdge
+        if pos.y() <= margin:
+            edges |= Qt.Edge.TopEdge
+        elif pos.y() >= rect.height() - margin:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    # --- Panel izquierdo: configuracion y estado de procesamiento ---
+
+    def _build_left_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("leftPanel")
+        layout = QVBoxLayout(panel)
+
+        title = QLabel("Configuracion")
+        title.setObjectName("panelTitle")
+        layout.addWidget(title)
 
         folder_row = QHBoxLayout()
+        folder_label = QLabel("Carpeta:")
+        folder_label.setObjectName("secondaryLabel")
         self._folder_edit = QLineEdit()
         self._folder_edit.setReadOnly(True)
         self._folder_edit.setPlaceholderText("Elegi una carpeta con fotografias...")
         browse_button = QPushButton("Examinar...")
         browse_button.clicked.connect(self._choose_folder)
-        folder_row.addWidget(QLabel("Carpeta:"))
+        folder_row.addWidget(folder_label)
         folder_row.addWidget(self._folder_edit)
         folder_row.addWidget(browse_button)
         layout.addLayout(folder_row)
@@ -87,11 +350,30 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._start_button)
 
         self._status_label = QLabel("Estado: -")
+        self._status_label.setObjectName("secondaryLabel")
         layout.addWidget(self._status_label)
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setValue(0)
         layout.addWidget(self._progress_bar)
+
+        layout.addWidget(self._build_results_frame())
+
+        self._open_results_button = QPushButton("Abrir carpeta de resultados")
+        self._open_results_button.clicked.connect(self._open_results_folder)
+        self._open_results_button.hide()
+        layout.addWidget(self._open_results_button)
+
+        layout.addStretch(1)
+        return panel
+
+    def _build_results_frame(self) -> QFrame:
+        # Tratado como una sub-seccion aparte (tarjeta propia), con un
+        # resplandor exterior sutil en el azul principal: un efecto de
+        # contenedor, no aplicado letra por letra.
+        frame = QFrame()
+        frame.setObjectName("resultsFrame")
+        layout = QVBoxLayout(frame)
 
         self._counts_label = QLabel("Encontradas: 0   Procesadas: 0   Errores: 0")
         layout.addWidget(self._counts_label)
@@ -100,12 +382,113 @@ class MainWindow(QMainWindow):
         self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
 
-        self._open_results_button = QPushButton("Abrir carpeta de resultados")
-        self._open_results_button.clicked.connect(self._open_results_folder)
-        self._open_results_button.hide()
-        layout.addWidget(self._open_results_button)
+        glow_color = QColor(ACCENT)
+        glow_color.setAlpha(26)  # ~10%: el resto del tema evita transparencias mayores
+        glow = QGraphicsDropShadowEffect(frame)
+        glow.setColor(glow_color)
+        glow.setBlurRadius(36)
+        glow.setOffset(0, 0)
+        frame.setGraphicsEffect(glow)
+        return frame
+
+    # --- Seccion derecha: "Procesando ahora" + "Galeria" como una unidad ---
+
+    def _build_media_section(self) -> QFrame:
+        section = QFrame()
+        section.setObjectName("mediaFrame")
+        self._media_frame = section
+        layout = QVBoxLayout(section)
+
+        preview_title = QLabel("Procesando ahora")
+        preview_title.setObjectName("panelTitle")
+        layout.addWidget(preview_title)
+
+        # "Escenario" oscuro alrededor de la vista previa: la vuelve el
+        # elemento visualmente protagonista de la seccion.
+        preview_stage = QFrame()
+        preview_stage.setObjectName("previewStage")
+        preview_stage_layout = QVBoxLayout(preview_stage)
+        preview_stage_layout.setContentsMargins(14, 14, 14, 14)
+        self._preview_label = QLabel("Sin vista previa")
+        self._preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._preview_label.setStyleSheet(f"color: {TEXT_SECONDARY};")
+        preview_stage_layout.addWidget(self._preview_label)
+        layout.addWidget(preview_stage, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        gallery_title = QLabel("Galeria")
+        gallery_title.setObjectName("panelTitle")
+        layout.addWidget(gallery_title)
+
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        self._thumbnail_cells: list[_ThumbnailCell] = []
+        for index in range(GALLERY_SIZE):
+            cell = _ThumbnailCell(slot=index)
+            cell.clicked.connect(self._on_thumbnail_clicked)
+            self._thumbnail_cells.append(cell)
+            grid.addWidget(cell, index // GALLERY_COLUMNS, index % GALLERY_COLUMNS)
+        grid_wrapper = QHBoxLayout()
+        grid_wrapper.addStretch(1)
+        grid_wrapper.addLayout(grid)
+        grid_wrapper.addStretch(1)
+        layout.addLayout(grid_wrapper)
+
+        nav_row = QHBoxLayout()
+        nav_row.addStretch(1)
+        self._gallery_prev_button = QPushButton("◀")
+        self._gallery_prev_button.setObjectName("galleryNavButton")
+        self._gallery_prev_button.setFixedSize(GALLERY_NAV_SIZE, GALLERY_NAV_SIZE)
+        self._gallery_prev_button.clicked.connect(self._on_gallery_prev)
+        self._gallery_next_button = QPushButton("▶")
+        self._gallery_next_button.setObjectName("galleryNavButton")
+        self._gallery_next_button.setFixedSize(GALLERY_NAV_SIZE, GALLERY_NAV_SIZE)
+        self._gallery_next_button.clicked.connect(self._on_gallery_next)
+        nav_row.addWidget(self._gallery_prev_button)
+        nav_row.addSpacing(12)
+        nav_row.addWidget(self._gallery_next_button)
+        nav_row.addStretch(1)
+        layout.addLayout(nav_row)
 
         layout.addStretch(1)
+        self._update_gallery_nav_buttons()
+        return section
+
+    # --- Tamanios dependientes del tamanio de la ventana ---
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - override de Qt
+        super().resizeEvent(event)
+        self._apply_media_sizes()
+
+    def _apply_media_sizes(self) -> None:
+        width = max(self.width(), 1)
+        height = max(self.height(), 1)
+        total_area = width * height
+
+        # La seccion "Procesando ahora" + "Galeria" ocupa un ~40% del area
+        # total de la ventana, con la altura ajustada al alto disponible del
+        # cuerpo (bajo la barra de titulo) para que su borde inferior quede
+        # a la misma altura que el panel de configuracion.
+        content_height = max(height - BAR_HEIGHT - 2 * BODY_MARGIN, 1)
+        section_area = total_area * MEDIA_SECTION_AREA_FRACTION
+        max_section_width = max(width - 3 * BODY_MARGIN - 260, 220)
+        section_width = min(
+            max(int(section_area / content_height), 220),
+            max_section_width,
+        )
+        self._media_frame.setFixedSize(section_width, content_height)
+
+        preview_area = total_area * PREVIEW_AREA_FRACTION
+        preview_h = max(int((preview_area * 3 / 4) ** 0.5), 60)
+        preview_w = max(int(preview_h * 4 / 3), 80)
+        self._preview_label.setFixedSize(preview_w, preview_h)
+
+        thumb_side = max(int((total_area * THUMBNAIL_AREA_FRACTION) ** 0.5), 28)
+        for cell in self._thumbnail_cells:
+            cell.setFixedSize(thumb_side, thumb_side)
+
+        self._refresh_preview_pixmap()
+        self._refresh_gallery_pixmaps()
 
     # --- Seleccion de carpeta ---
 
@@ -128,7 +511,7 @@ class MainWindow(QMainWindow):
     def _start_processing(self) -> None:
         folder_text = self._folder_edit.text().strip()
         if not folder_text:
-            QMessageBox.warning(self, "PhotoSorter", "Primero elegí una carpeta.")
+            self._warn("Primero elegí una carpeta.")
             return
 
         # RF-05 / Requisitos V1.0, seccion 9: las carpetas Verticales/
@@ -151,6 +534,13 @@ class MainWindow(QMainWindow):
         self._cancellation_token = CancellationToken()
         self._settings = settings
         self._error_count = 0
+        self._history = []
+        self._gallery_offset = 0
+        self._gallery_follow = True
+        self._selected_index = None
+        self._refresh_preview_pixmap()
+        self._refresh_gallery_pixmaps()
+        self._update_gallery_nav_buttons()
 
         self._worker = SorterWorker(sorter_service, settings, self._cancellation_token, self)
         self._worker.started.connect(self._on_started)
@@ -176,8 +566,16 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(0)
         self._update_counts(found=total_files, processed=0)
 
-    def _on_file_started(self, photo: Photo) -> None:
+    def _on_file_started(self, photo: Photo, image: QImage | None) -> None:
         self._status_label.setText(f"Procesando {photo.filename}")
+
+        self._history.append((photo, image))
+        if self._gallery_follow:
+            self._gallery_offset = max(0, len(self._history) - GALLERY_SIZE)
+
+        self._refresh_preview_pixmap()
+        self._refresh_gallery_pixmaps()
+        self._update_gallery_nav_buttons()
 
     def _on_file_completed(
         self, processed_count: int, total_files: int, result: ProcessingResult
@@ -214,7 +612,7 @@ class MainWindow(QMainWindow):
     def _on_failed(self, message: str) -> None:
         self._reset_controls_after_run()
         self._status_label.setText("Estado: error")
-        QMessageBox.critical(self, "PhotoSorter", message)
+        self._critical(message)
 
     def _reset_controls_after_run(self) -> None:
         self._worker = None
@@ -228,6 +626,88 @@ class MainWindow(QMainWindow):
             f"Encontradas: {found}   Procesadas: {processed}   Errores: {self._error_count}"
         )
 
+    # --- Vista previa actual ---
+
+    def _current_preview_index(self) -> int | None:
+        if self._selected_index is not None:
+            return self._selected_index
+        if self._history:
+            return len(self._history) - 1
+        return None
+
+    def _refresh_preview_pixmap(self) -> None:
+        index = self._current_preview_index()
+        image = self._history[index][1] if index is not None else None
+        if image is None:
+            # No llamar setPixmap aca: un QPixmap nulo pisa el texto (QLabel
+            # solo puede mostrar uno de los dos a la vez).
+            self._preview_label.setText("Sin vista previa")
+            return
+
+        pixmap = QPixmap.fromImage(image).scaled(
+            self._preview_label.width(),
+            self._preview_label.height(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._preview_label.setText("")
+        self._preview_label.setPixmap(pixmap)
+
+    # --- Mini galeria ---
+
+    def _refresh_gallery_pixmaps(self) -> None:
+        for slot, cell in enumerate(self._thumbnail_cells):
+            index = self._gallery_offset + slot
+            cell.set_selected(index == self._selected_index)
+
+            if index >= len(self._history):
+                # Menos de 6 fotos disponibles todavia: la celda queda
+                # vacia con su tamanio fijo, no se agranda el resto.
+                cell.setText("")
+                cell.setPixmap(QPixmap())
+                continue
+
+            _, image = self._history[index]
+            if image is None:
+                cell.setPixmap(QPixmap())
+                cell.setText("?")
+                continue
+
+            pixmap = QPixmap.fromImage(image).scaled(
+                cell.width(),
+                cell.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            cell.setText("")
+            cell.setPixmap(pixmap)
+
+    def _on_thumbnail_clicked(self, slot: int) -> None:
+        index = self._gallery_offset + slot
+        if index >= len(self._history):
+            return
+        self._selected_index = index
+        self._refresh_preview_pixmap()
+        self._refresh_gallery_pixmaps()
+
+    def _on_gallery_prev(self) -> None:
+        self._gallery_offset = max(0, self._gallery_offset - 1)
+        self._gallery_follow = False
+        self._refresh_gallery_pixmaps()
+        self._update_gallery_nav_buttons()
+
+    def _on_gallery_next(self) -> None:
+        max_offset = max(0, len(self._history) - GALLERY_SIZE)
+        self._gallery_offset = min(max_offset, self._gallery_offset + 1)
+        self._gallery_follow = self._gallery_offset >= max_offset
+        self._refresh_gallery_pixmaps()
+        self._update_gallery_nav_buttons()
+
+    def _update_gallery_nav_buttons(self) -> None:
+        max_offset = max(0, len(self._history) - GALLERY_SIZE)
+        self._gallery_prev_button.setEnabled(self._gallery_offset > 0)
+        self._gallery_next_button.setEnabled(self._gallery_offset < max_offset)
+
     # --- Conflictos ---
 
     def _on_conflict_requested(self, conflict: FileConflict) -> None:
@@ -239,3 +719,13 @@ class MainWindow(QMainWindow):
 
     def _open_results_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._settings.destination_path)))
+
+    # --- Dialogos ---
+
+    def _warn(self, message: str) -> None:
+        box = QMessageBox(QMessageBox.Icon.Warning, "PhotoSorter", message, parent=self)
+        box.exec()
+
+    def _critical(self, message: str) -> None:
+        box = QMessageBox(QMessageBox.Icon.Critical, "PhotoSorter", message, parent=self)
+        box.exec()

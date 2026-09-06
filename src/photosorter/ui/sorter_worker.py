@@ -9,6 +9,7 @@ from photosorter.domain.models.app_settings import AppSettings
 from photosorter.domain.models.photo import Photo
 from photosorter.domain.models.processing_result import ProcessingResult
 from photosorter.domain.models.processing_summary import ProcessingSummary
+from photosorter.ui.thumbnail import load_preview_image
 
 
 class SorterWorker(QThread):
@@ -23,7 +24,10 @@ class SorterWorker(QThread):
     # complejos: es la forma recomendada en PySide6 de cruzar objetos
     # Python arbitrarios entre hilos via QueuedConnection.
     started = Signal(int)
-    file_started = Signal(object)  # Photo
+    # La miniatura (QImage o None) se extrae aca, en el hilo de fondo, para
+    # no bloquear la UI decodificando RAW/JPEG cada vez que arranca un
+    # archivo (ver ui/thumbnail.py).
+    file_started = Signal(object, object)  # Photo, QImage | None
     file_completed = Signal(int, int, object)  # processed, total, ProcessingResult
     finished_processing = Signal(object)  # ProcessingSummary
     failed = Signal(str)
@@ -46,7 +50,8 @@ class SorterWorker(QThread):
         self.started.emit(total_files)
 
     def on_file_started(self, photo: Photo) -> None:
-        self.file_started.emit(photo)
+        image = load_preview_image(photo.source_path)
+        self.file_started.emit(photo, image)
 
     def on_file_completed(
         self, processed_count: int, total_files: int, result: ProcessingResult
