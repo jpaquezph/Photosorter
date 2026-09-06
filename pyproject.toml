@@ -5,7 +5,7 @@ description = "Aplicacion de escritorio para organizar fotografias por orientaci
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pyside6>=6.7",
+    "pyside6>=6.7,<6.10",
     "pillow>=10.4",
     "rawpy>=0.21",
 ]
