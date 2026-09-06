@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
+from typing import Callable
 
 from photosorter.application.cancellation_token import CancellationToken
 from photosorter.application.null_progress_reporter import NullProgressReporter
@@ -15,6 +17,7 @@ from photosorter.domain.models.classification import Classification
 from photosorter.domain.models.photo import Photo
 from photosorter.domain.models.processing_result import ProcessingResult, ProcessingStatus
 from photosorter.domain.models.processing_summary import ProcessingSummary
+from photosorter.domain.models.progress_estimate import ProgressEstimate
 from photosorter.domain.services.conflict_service import ConflictService
 
 _logger = logging.getLogger(__name__)
@@ -40,6 +43,7 @@ class SorterService:
         destination_resolver: DestinationResolver,
         conflict_service: ConflictService,
         logger: logging.Logger | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._file_scanner = file_scanner
         self._image_reader = image_reader
@@ -47,6 +51,7 @@ class SorterService:
         self._destination_resolver = destination_resolver
         self._conflict_service = conflict_service
         self._logger = logger or _logger
+        self._clock = clock or time.monotonic
 
     def run(
         self,
@@ -70,6 +75,7 @@ class SorterService:
         classification_counts: Counter[Classification] = Counter()
         processed = 0
         cancelled = False
+        start_time = self._clock()
 
         for photo in photos:
             if token.is_cancelled:
@@ -82,7 +88,8 @@ class SorterService:
             status_counts[result.status] += 1
             if classification is not None:
                 classification_counts[classification] += 1
-            reporter.on_file_completed(processed, total_files, result)
+            estimate = self._estimate_progress(start_time, processed, total_files)
+            reporter.on_file_completed(processed, total_files, result, estimate)
 
         summary = ProcessingSummary(
             total_files=total_files,
@@ -133,3 +140,15 @@ class SorterService:
             "%s -> %s (%s)", photo.filename, classification.value.upper(), result.status.value
         )
         return result, classification
+
+    def _estimate_progress(
+        self, start_time: float, processed: int, total_files: int
+    ) -> ProgressEstimate:
+        elapsed = max(self._clock() - start_time, 0.0)
+        average = elapsed / processed
+        remaining_files = max(total_files - processed, 0)
+        return ProgressEstimate(
+            elapsed_seconds=elapsed,
+            average_seconds_per_file=average,
+            remaining_seconds=average * remaining_files,
+        )
