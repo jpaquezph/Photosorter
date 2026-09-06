@@ -36,6 +36,7 @@ from photosorter.domain.models.file_conflict import FileConflict
 from photosorter.domain.models.photo import Photo
 from photosorter.domain.models.processing_result import ProcessingResult, ProcessingStatus
 from photosorter.domain.models.processing_summary import ProcessingSummary
+from photosorter.domain.models.progress_estimate import ProgressEstimate
 from photosorter.domain.services.conflict_service import ConflictService
 from photosorter.domain.services.orientation_classifier import OrientationClassifier
 from photosorter.infrastructure.filesystem.copy_file_operator import CopyFileOperator
@@ -378,6 +379,10 @@ class MainWindow(QMainWindow):
         self._counts_label = QLabel("Encontradas: 0   Procesadas: 0   Errores: 0")
         layout.addWidget(self._counts_label)
 
+        self._eta_label = QLabel("Tiempo restante estimado: --:--")
+        self._eta_label.setObjectName("secondaryLabel")
+        layout.addWidget(self._eta_label)
+
         self._summary_label = QLabel("")
         self._summary_label.setWordWrap(True)
         layout.addWidget(self._summary_label)
@@ -565,6 +570,7 @@ class MainWindow(QMainWindow):
         self._progress_bar.setMaximum(max(total_files, 1))
         self._progress_bar.setValue(0)
         self._update_counts(found=total_files, processed=0)
+        self._eta_label.setText("Tiempo restante estimado: calculando...")
 
     def _on_file_started(self, photo: Photo, image: QImage | None) -> None:
         self._status_label.setText(f"Procesando {photo.filename}")
@@ -578,15 +584,23 @@ class MainWindow(QMainWindow):
         self._update_gallery_nav_buttons()
 
     def _on_file_completed(
-        self, processed_count: int, total_files: int, result: ProcessingResult
+        self,
+        processed_count: int,
+        total_files: int,
+        result: ProcessingResult,
+        estimate: ProgressEstimate,
     ) -> None:
         if result.status == ProcessingStatus.FAILED:
             self._error_count += 1
         self._progress_bar.setValue(processed_count)
         self._update_counts(found=total_files, processed=processed_count)
+        self._eta_label.setText(
+            f"Tiempo restante estimado: {self._format_duration(estimate.remaining_seconds)}"
+        )
 
     def _on_finished(self, summary: ProcessingSummary) -> None:
         self._reset_controls_after_run()
+        self._eta_label.setText("Tiempo restante estimado: --:--")
 
         if summary.cancelled:
             self._status_label.setText("Estado: proceso cancelado")
@@ -625,6 +639,15 @@ class MainWindow(QMainWindow):
         self._counts_label.setText(
             f"Encontradas: {found}   Procesadas: {processed}   Errores: {self._error_count}"
         )
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        total_seconds = int(round(seconds))
+        minutes, secs = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
 
     # --- Vista previa actual ---
 

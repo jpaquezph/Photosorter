@@ -9,6 +9,7 @@ from photosorter.domain.models.app_settings import AppSettings
 from photosorter.domain.models.photo import Photo
 from photosorter.domain.models.processing_result import ProcessingResult
 from photosorter.domain.models.processing_summary import ProcessingSummary
+from photosorter.domain.models.progress_estimate import ProgressEstimate
 from photosorter.ui.thumbnail import load_preview_image
 
 
@@ -28,7 +29,7 @@ class SorterWorker(QThread):
     # no bloquear la UI decodificando RAW/JPEG cada vez que arranca un
     # archivo (ver ui/thumbnail.py).
     file_started = Signal(object, object)  # Photo, QImage | None
-    file_completed = Signal(int, int, object)  # processed, total, ProcessingResult
+    file_completed = Signal(int, int, object, object)  # processed, total, result, estimate
     finished_processing = Signal(object)  # ProcessingSummary
     failed = Signal(str)
 
@@ -54,9 +55,13 @@ class SorterWorker(QThread):
         self.file_started.emit(photo, image)
 
     def on_file_completed(
-        self, processed_count: int, total_files: int, result: ProcessingResult
+        self,
+        processed_count: int,
+        total_files: int,
+        result: ProcessingResult,
+        estimate: ProgressEstimate,
     ) -> None:
-        self.file_completed.emit(processed_count, total_files, result)
+        self.file_completed.emit(processed_count, total_files, result, estimate)
 
     def on_finished(self, summary: ProcessingSummary) -> None:
         self.finished_processing.emit(summary)
