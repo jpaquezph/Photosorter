@@ -35,6 +35,7 @@ class _RecordingProgressReporter:
         self.started_with: int | None = None
         self.files_started: list[str] = []
         self.files_completed: list[tuple[int, int, ProcessingStatus]] = []
+        self.estimates: list = []
         self.summary = None
 
     def on_started(self, total_files: int) -> None:
@@ -43,14 +44,15 @@ class _RecordingProgressReporter:
     def on_file_started(self, photo) -> None:  # noqa: ANN001 - test double
         self.files_started.append(photo.filename)
 
-    def on_file_completed(self, processed_count, total_files, result) -> None:  # noqa: ANN001
+    def on_file_completed(self, processed_count, total_files, result, estimate) -> None:  # noqa: ANN001
         self.files_completed.append((processed_count, total_files, result.status))
+        self.estimates.append(estimate)
 
     def on_finished(self, summary) -> None:  # noqa: ANN001 - test double
         self.summary = summary
 
 
-def _build_sorter_service(conflict_prompt) -> SorterService:  # noqa: ANN001 - test helper
+def _build_sorter_service(conflict_prompt, clock=None) -> SorterService:  # noqa: ANN001
     reader = CompositeImageReader([RawImageReader(), StandardImageReader()])
     return SorterService(
         file_scanner=DefaultFileScanner(reader),
@@ -58,6 +60,7 @@ def _build_sorter_service(conflict_prompt) -> SorterService:  # noqa: ANN001 - t
         classifier=OrientationClassifier(),
         destination_resolver=DefaultDestinationResolver(),
         conflict_service=ConflictService(CopyFileOperator(), conflict_prompt),
+        clock=clock,
     )
 
 
@@ -123,6 +126,33 @@ def test_reports_progress_for_every_file(tmp_path: Path) -> None:
     assert reporter.summary == summary
 
 
+def test_reports_time_remaining_estimate_based_on_average_time_per_file(
+    tmp_path: Path,
+) -> None:
+    Image.new("RGB", (200, 100), color="red").save(tmp_path / "a.jpg")
+    Image.new("RGB", (200, 100), color="blue").save(tmp_path / "b.jpg")
+
+    settings = AppSettings(
+        source_path=tmp_path, destination_path=tmp_path / "Organizadas", recursive=False
+    )
+    reporter = _RecordingProgressReporter()
+    # Reloj falso: 0s al arrancar, 10s tras el primer archivo, 20s tras el segundo.
+    fake_clock = iter([0.0, 10.0, 20.0])
+    service = _build_sorter_service(
+        _FixedConflictPrompt(ConflictDecision(ConflictResolution.SKIP)),
+        clock=lambda: next(fake_clock),
+    )
+
+    service.run(settings, progress_reporter=reporter)
+
+    first_estimate, second_estimate = reporter.estimates
+    assert first_estimate.elapsed_seconds == 10.0
+    assert first_estimate.average_seconds_per_file == 10.0
+    assert first_estimate.remaining_seconds == 10.0
+    assert second_estimate.elapsed_seconds == 20.0
+    assert second_estimate.remaining_seconds == 0.0
+
+
 def test_cancellation_stops_processing_remaining_files(tmp_path: Path) -> None:
     Image.new("RGB", (200, 100), color="red").save(tmp_path / "a.jpg")
     Image.new("RGB", (200, 100), color="blue").save(tmp_path / "b.jpg")
@@ -134,8 +164,8 @@ def test_cancellation_stops_processing_remaining_files(tmp_path: Path) -> None:
     token = CancellationToken()
 
     class _CancelAfterFirstFile(_RecordingProgressReporter):
-        def on_file_completed(self, processed_count, total_files, result) -> None:  # noqa: ANN001
-            super().on_file_completed(processed_count, total_files, result)
+        def on_file_completed(self, processed_count, total_files, result, estimate) -> None:  # noqa: ANN001
+            super().on_file_completed(processed_count, total_files, result, estimate)
             token.cancel()
 
     reporter = _CancelAfterFirstFile()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from photosorter.domain.models.photo import Photo
 from photosorter.domain.models.processing_result import ProcessingResult
 from photosorter.domain.models.processing_summary import ProcessingSummary
+from photosorter.domain.models.progress_estimate import ProgressEstimate
 
 
 class NullProgressReporter:
@@ -18,7 +19,11 @@ class NullProgressReporter:
         pass
 
     def on_file_completed(
-        self, processed_count: int, total_files: int, result: ProcessingResult
+        self,
+        processed_count: int,
+        total_files: int,
+        result: ProcessingResult,
+        estimate: ProgressEstimate,
     ) -> None:
         pass
 
