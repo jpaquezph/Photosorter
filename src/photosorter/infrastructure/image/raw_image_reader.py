@@ -35,9 +35,11 @@ class RawImageReader:
             with rawpy.imread(str(photo.source_path)) as raw:
                 sizes = raw.sizes
         except rawpy.LibRawError as exc:
-            raise ImageReaderError(f"No se pudo leer el RAW: {photo.source_path}") from exc
+            # Mensaje corto a proposito (sin la ruta): ver comentario
+            # equivalente en StandardImageReader.
+            raise ImageReaderError("No se pudo leer el RAW") from exc
         except OSError as exc:
-            raise ImageReaderError(f"No se pudo leer el RAW: {photo.source_path}") from exc
+            raise ImageReaderError("No se pudo leer el RAW") from exc
 
         orientation = (
             _ORIENTATION_SWAPPED if sizes.flip in _FLIP_ROTATED_90_OR_270 else _ORIENTATION_NORMAL

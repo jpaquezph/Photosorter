@@ -23,6 +23,21 @@ from photosorter.domain.services.conflict_service import ConflictService
 _logger = logging.getLogger(__name__)
 
 
+def _short_error_message(exc: Exception) -> str:
+    """Mensaje de error sin la ruta del archivo (ProcessingResult.error).
+
+    OSError.strerror trae el texto del sistema operativo (p.ej. "Permission
+    denied") sin el nombre de archivo que Python le agrega en str(exc); las
+    demas excepciones (ImageReaderError) ya construyen mensajes cortos
+    a proposito. Sin esto, el desplegable de errores de la UI (que ya
+    muestra el archivo por separado) queda ilegible cuando hay muchos
+    errores.
+    """
+    if isinstance(exc, OSError) and exc.strerror:
+        return exc.strerror
+    return str(exc)
+
+
 class SorterService:
     """Orquesta el procesamiento completo de una carpeta de fotografias.
 
@@ -78,6 +93,7 @@ class SorterService:
         start_time = self._clock()
 
         for photo in photos:
+            token.wait_if_paused()
             if token.is_cancelled:
                 cancelled = True
                 break
@@ -118,7 +134,9 @@ class SorterService:
             self._logger.error("%s -> ERROR: %s", photo.filename, exc)
             return (
                 ProcessingResult(
-                    source_path=photo.source_path, status=ProcessingStatus.FAILED, error=str(exc)
+                    source_path=photo.source_path,
+                    status=ProcessingStatus.FAILED,
+                    error=_short_error_message(exc),
                 ),
                 None,
             )
@@ -131,7 +149,9 @@ class SorterService:
             self._logger.error("%s -> ERROR: %s", photo.filename, exc)
             return (
                 ProcessingResult(
-                    source_path=photo.source_path, status=ProcessingStatus.FAILED, error=str(exc)
+                    source_path=photo.source_path,
+                    status=ProcessingStatus.FAILED,
+                    error=_short_error_message(exc),
                 ),
                 classification,
             )

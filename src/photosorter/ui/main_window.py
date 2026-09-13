@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import QPointF, Qt, QUrl, Signal
 from PySide6.QtGui import (
+    QCloseEvent,
     QColor,
     QDesktopServices,
     QImage,
     QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
     QPixmap,
     QResizeEvent,
 )
@@ -22,9 +26,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
     QVBoxLayout,
     QWidget,
 )
@@ -192,6 +199,25 @@ QProgressBar::chunk {{
     );
     border-radius: 3px;
 }}
+QPushButton#errorsToggle {{
+    background-color: {CARD};
+    color: {ERROR};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 4px 10px;
+    text-align: left;
+    font-weight: bold;
+}}
+QPushButton#errorsToggle:hover {{
+    border-color: {ERROR};
+}}
+QPlainTextEdit#errorsText {{
+    background-color: {CARD};
+    color: {TEXT_PRIMARY};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 6px;
+}}
 """
 
 
@@ -226,6 +252,45 @@ class _ThumbnailCell(QLabel):
         super().mousePressEvent(event)
 
 
+class _CheckBox(QCheckBox):
+    """QCheckBox con un tilde dibujado a mano sobre el indicator al marcarlo.
+
+    El relleno solido de QCheckBox::indicator:checked (ver STYLE_SHEET) no
+    alcanza como feedback visual de que la opcion esta activa; Qt Style
+    Sheets no soporta un ::indicator:checked con imagen sin apuntar a un
+    archivo o recurso Qt, asi que el tilde se dibuja a mano (sin assets),
+    igual que el resaltado de seleccion de _ThumbnailCell.
+    """
+
+    def paintEvent(self, event: QPaintEvent) -> None:  # noqa: N802 - override de Qt
+        super().paintEvent(event)
+        if not self.isChecked():
+            return
+
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        rect = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxIndicator, option, self
+        )
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(TEXT_PRIMARY))
+        pen.setWidthF(1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+
+        # Tilde de dos segmentos (estilo Material Design), en coordenadas
+        # relativas al indicator para no depender de su tamanio exacto.
+        x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+        start = QPointF(x + w * 0.22, y + h * 0.55)
+        middle = QPointF(x + w * 0.42, y + h * 0.75)
+        end = QPointF(x + w * 0.80, y + h * 0.28)
+        painter.drawLine(start, middle)
+        painter.drawLine(middle, end)
+
+
 class MainWindow(QMainWindow):
     """Ventana unica de PhotoSorter V1 (Requisitos V1.0, seccion 12).
 
@@ -253,6 +318,10 @@ class MainWindow(QMainWindow):
 
         self._worker: SorterWorker | None = None
         self._error_count = 0
+        # (source_path, mensaje) de cada archivo que termino en FAILED,
+        # en el orden en que ocurrieron. Alimenta el desplegable de
+        # errores (parte inferior del panel de configuracion).
+        self._error_log: list[tuple[Path, str]] = []
 
         # Historial de (Photo, QImage | None) en el orden en que se van
         # procesando: alimenta la vista previa y la mini galeria.
@@ -293,6 +362,36 @@ class MainWindow(QMainWindow):
             self.showNormal()
         else:
             self.showMaximized()
+
+    # --- Cierre de la ventana (cruz de la barra de titulo, Alt+F4, etc.) ---
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - override de Qt
+        worker = self._worker
+        if worker is None:
+            if self._confirm("¿Seguro que querés cerrar PhotoSorter?"):
+                event.accept()
+            else:
+                event.ignore()
+            return
+
+        # Se frena el procesamiento (entre archivo y archivo, sin
+        # interrumpir una copia en curso; ver CancellationToken) mientras
+        # se espera la respuesta del usuario, y se retoma tal cual estaba
+        # si decide no cerrar.
+        self._cancellation_token.pause()
+        confirmed = self._confirm(
+            "Hay un proceso de organizacion en curso.\n"
+            "¿Seguro que querés cancelarlo y cerrar PhotoSorter?"
+        )
+
+        if not confirmed:
+            self._cancellation_token.resume()
+            event.ignore()
+            return
+
+        self._cancellation_token.cancel()
+        worker.wait(5000)
+        event.accept()
 
     # --- Redimensionar arrastrando los bordes (ventana sin marco nativo) ---
 
@@ -343,7 +442,7 @@ class MainWindow(QMainWindow):
         folder_row.addWidget(browse_button)
         layout.addLayout(folder_row)
 
-        self._recursive_checkbox = QCheckBox("Incluir subcarpetas")
+        self._recursive_checkbox = _CheckBox("Incluir subcarpetas")
         layout.addWidget(self._recursive_checkbox)
 
         self._start_button = QPushButton("SEPARAR FOTOS")
@@ -366,7 +465,37 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._open_results_button)
 
         layout.addStretch(1)
+        layout.addWidget(self._build_errors_panel())
         return panel
+
+    def _build_errors_panel(self) -> QFrame:
+        # Desplegable pegado a la parte inferior de la ventana (RF de
+        # detalle de errores): colapsado por defecto para no competir con
+        # el resto del panel, oculto por completo mientras no haya errores.
+        frame = QFrame()
+        frame.setObjectName("errorsFrame")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._errors_toggle = QPushButton()
+        self._errors_toggle.setObjectName("errorsToggle")
+        self._errors_toggle.setCheckable(True)
+        self._errors_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._errors_toggle.clicked.connect(self._on_errors_toggle_clicked)
+        layout.addWidget(self._errors_toggle)
+
+        self._errors_text = QPlainTextEdit()
+        self._errors_text.setObjectName("errorsText")
+        self._errors_text.setReadOnly(True)
+        self._errors_text.setMaximumHeight(140)
+        self._errors_text.hide()
+        layout.addWidget(self._errors_text)
+
+        self._errors_frame = frame
+        self._reset_errors_panel()
+        frame.hide()
+        return frame
 
     def _build_results_frame(self) -> QFrame:
         # Tratado como una sub-seccion aparte (tarjeta propia), con un
@@ -506,12 +635,25 @@ class MainWindow(QMainWindow):
 
     def _on_start_or_cancel_clicked(self) -> None:
         if self._worker is not None:
-            self._cancellation_token.cancel()
-            self._start_button.setEnabled(False)
-            self._status_label.setText("Estado: cancelando...")
+            self._request_cancel()
             return
 
         self._start_processing()
+
+    def _request_cancel(self) -> None:
+        # Mismo criterio que closeEvent: se pausa (entre archivo y
+        # archivo) mientras se pregunta, y se retoma tal cual estaba si el
+        # usuario se arrepiente.
+        self._cancellation_token.pause()
+        confirmed = self._confirm("¿Seguro que querés cancelar el proceso de organización?")
+
+        if not confirmed:
+            self._cancellation_token.resume()
+            return
+
+        self._cancellation_token.cancel()
+        self._start_button.setEnabled(False)
+        self._status_label.setText("Estado: cancelando...")
 
     def _start_processing(self) -> None:
         folder_text = self._folder_edit.text().strip()
@@ -539,6 +681,8 @@ class MainWindow(QMainWindow):
         self._cancellation_token = CancellationToken()
         self._settings = settings
         self._error_count = 0
+        self._error_log = []
+        self._reset_errors_panel()
         self._history = []
         self._gallery_offset = 0
         self._gallery_follow = True
@@ -592,6 +736,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         if result.status == ProcessingStatus.FAILED:
             self._error_count += 1
+            self._record_error(result)
         self._progress_bar.setValue(processed_count)
         self._update_counts(found=total_files, processed=processed_count)
         self._eta_label.setText(
@@ -601,6 +746,11 @@ class MainWindow(QMainWindow):
     def _on_finished(self, summary: ProcessingSummary) -> None:
         self._reset_controls_after_run()
         self._eta_label.setText("Tiempo restante estimado: --:--")
+
+        if summary.total_files == 0:
+            self._status_label.setText("Estado: sin fotografías")
+            self._warn("Esta carpeta no contiene imágenes.")
+            return
 
         if summary.cancelled:
             self._status_label.setText("Estado: proceso cancelado")
@@ -710,8 +860,14 @@ class MainWindow(QMainWindow):
         if index >= len(self._history):
             return
         self._selected_index = index
+        # Ademas de fijar la vista previa, se deja de seguir el
+        # procesamiento en vivo: si no, la grilla se sigue corriendo hacia
+        # las fotos nuevas y un segundo click termina cayendo sobre una
+        # miniatura distinta a la que el usuario ve en pantalla.
+        self._gallery_follow = False
         self._refresh_preview_pixmap()
         self._refresh_gallery_pixmaps()
+        self._update_gallery_nav_buttons()
 
     def _on_gallery_prev(self) -> None:
         self._gallery_offset = max(0, self._gallery_offset - 1)
@@ -743,6 +899,52 @@ class MainWindow(QMainWindow):
     def _open_results_folder(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._settings.destination_path)))
 
+    # --- Desplegable de errores ---
+
+    def _record_error(self, result: ProcessingResult) -> None:
+        # result.error ya viene armado por ImageReader/SorterService con
+        # que paso (ver TDD, seccion 13-14): aca solo se le suma el
+        # archivo puntual y se muestra, sin re-parsear logs de texto.
+        message = result.error or "Error desconocido"
+        self._error_log.append((result.source_path, message))
+        self._errors_text.setPlainText(
+            "\n".join(f"-> {path}: {msg}" for path, msg in self._formatted_error_log())
+        )
+        self._errors_frame.show()
+        self._set_errors_toggle_text()
+        # Ultimo error visible sin que el usuario tenga que desplazarse.
+        self._errors_text.verticalScrollBar().setValue(
+            self._errors_text.verticalScrollBar().maximum()
+        )
+
+    def _formatted_error_log(self) -> list[tuple[str, str]]:
+        return [(self._relative_to_source(path), message) for path, message in self._error_log]
+
+    def _relative_to_source(self, path: Path) -> str:
+        source = getattr(self, "_settings", None)
+        if source is not None:
+            return str(path.relative_to(source.source_path))
+        return str(path)
+
+    def _reset_errors_panel(self) -> None:
+        self._errors_text.clear()
+        self._errors_toggle.setChecked(False)
+        self._errors_text.hide()
+        self._set_errors_toggle_text()
+        self._errors_frame.hide()
+
+    def _set_errors_toggle_text(self) -> None:
+        expanded = self._errors_toggle.isChecked()
+        arrow = "▾" if expanded else "▸"
+        count = len(self._error_log)
+        label = "error" if count == 1 else "errores"
+        self._errors_toggle.setText(f"{arrow} {count} {label} - ver detalle")
+
+    def _on_errors_toggle_clicked(self) -> None:
+        expanded = self._errors_toggle.isChecked()
+        self._errors_text.setVisible(expanded)
+        self._set_errors_toggle_text()
+
     # --- Dialogos ---
 
     def _warn(self, message: str) -> None:
@@ -752,3 +954,9 @@ class MainWindow(QMainWindow):
     def _critical(self, message: str) -> None:
         box = QMessageBox(QMessageBox.Icon.Critical, "PhotoSorter", message, parent=self)
         box.exec()
+
+    def _confirm(self, message: str) -> bool:
+        box = QMessageBox(QMessageBox.Icon.Question, "PhotoSorter", message, parent=self)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        return box.exec() == QMessageBox.StandardButton.Yes

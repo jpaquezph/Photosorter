@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from PIL import Image
@@ -88,6 +89,29 @@ def test_organizes_a_mixed_folder_and_continues_after_a_corrupt_file(tmp_path: P
     assert not summary.cancelled
 
 
+def test_preserves_root_folder_structure_when_recursive(tmp_path: Path) -> None:
+    musica_dir = tmp_path / "Musica"
+    musica_dir.mkdir()
+    Image.new("RGB", (200, 100), color="red").save(musica_dir / "cancion.jpg")
+
+    inmuebles_dir = tmp_path / "Inmuebles" / "Frente"
+    inmuebles_dir.mkdir(parents=True)
+    Image.new("RGB", (100, 200), color="blue").save(inmuebles_dir / "casa.jpg")
+
+    settings = AppSettings(source_path=tmp_path, destination_path=tmp_path, recursive=True)
+    service = _build_sorter_service(_FixedConflictPrompt(ConflictDecision(ConflictResolution.SKIP)))
+
+    summary = service.run(settings)
+
+    assert summary.copied_files == 2
+    assert (musica_dir / "Horizontales" / "cancion.jpg").exists()
+    assert (inmuebles_dir / "Verticales" / "casa.jpg").exists()
+    # Las fotos originales de una carpeta raiz no terminan mezcladas con
+    # las de otra carpeta raiz distinta.
+    assert not (tmp_path / "Horizontales").exists()
+    assert not (tmp_path / "Verticales").exists()
+
+
 def test_resolves_conflicts_using_the_conflict_prompt(tmp_path: Path) -> None:
     Image.new("RGB", (200, 100), color="green").save(tmp_path / "horizontal.jpg")
     existing = tmp_path / "Organizadas" / "Horizontales" / "horizontal.jpg"
@@ -176,6 +200,49 @@ def test_cancellation_stops_processing_remaining_files(tmp_path: Path) -> None:
     assert summary.cancelled is True
     assert summary.processed_files == 1
     assert summary.total_files == 3
+
+
+def test_pausing_stops_processing_until_resumed(tmp_path: Path) -> None:
+    Image.new("RGB", (200, 100), color="red").save(tmp_path / "a.jpg")
+    Image.new("RGB", (200, 100), color="blue").save(tmp_path / "b.jpg")
+
+    settings = AppSettings(
+        source_path=tmp_path, destination_path=tmp_path / "Organizadas", recursive=False
+    )
+    token = CancellationToken()
+    service = _build_sorter_service(_FixedConflictPrompt(ConflictDecision(ConflictResolution.SKIP)))
+
+    class _PauseAfterFirstFile(_RecordingProgressReporter):
+        def on_file_completed(self, processed_count, total_files, result, estimate) -> None:  # noqa: ANN001
+            super().on_file_completed(processed_count, total_files, result, estimate)
+            if processed_count == 1:
+                token.pause()
+
+    reporter = _PauseAfterFirstFile()
+    summary_box: list = []
+    thread = threading.Thread(
+        target=lambda: summary_box.append(
+            service.run(settings, progress_reporter=reporter, cancellation_token=token)
+        )
+    )
+    thread.start()
+    try:
+        # Se pauso justo despues del primer archivo: el segundo no deberia
+        # procesarse todavia, aunque pase un rato.
+        thread.join(timeout=0.3)
+        assert thread.is_alive()
+        assert reporter.files_completed == [(1, 2, ProcessingStatus.COPIED)]
+
+        token.resume()
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+    finally:
+        token.cancel()
+        thread.join(timeout=2.0)
+
+    assert [c[0] for c in reporter.files_completed] == [1, 2]
+    summary = summary_box[0]
+    assert summary.cancelled is False
 
 
 def test_logs_key_processing_events(tmp_path: Path, caplog) -> None:  # noqa: ANN001

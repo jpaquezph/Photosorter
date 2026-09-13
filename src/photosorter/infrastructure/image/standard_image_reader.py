@@ -29,7 +29,11 @@ class StandardImageReader:
                 exif = img.getexif()
                 orientation = exif.get(_EXIF_ORIENTATION_TAG)
         except (UnidentifiedImageError, OSError) as exc:
-            raise ImageReaderError(f"No se pudo leer la imagen: {photo.source_path}") from exc
+            # Mensaje corto a proposito (sin la ruta): quien llama ya sabe
+            # que archivo es (Photo/ProcessingResult.source_path) y lo
+            # muestra por separado; repetirla ahi hace ilegible el
+            # desplegable de errores cuando hay muchos (ver UI).
+            raise ImageReaderError("No se pudo leer la imagen") from exc
 
         return PhotoMetadata(
             width=width,
