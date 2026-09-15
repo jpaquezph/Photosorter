@@ -73,7 +73,11 @@ class SorterService:
         settings: AppSettings,
         progress_reporter: ProgressReporter | None = None,
         cancellation_token: CancellationToken | None = None,
+        max_photos: int | None = None,
     ) -> ProcessingSummary:
+        """Ejecuta la organizacion. `max_photos` (opcional) tope generico a
+        la cantidad de fotos a procesar en esta corrida; None = sin tope.
+        """
         reporter = progress_reporter or NullProgressReporter()
         token = cancellation_token or CancellationToken()
 
@@ -82,6 +86,8 @@ class SorterService:
         self._logger.info("Recursive: %s", settings.recursive)
 
         photos = self._file_scanner.scan(settings)
+        if max_photos is not None:
+            photos = photos[:max_photos]
         total_files = len(photos)
         self._logger.info("Files found: %d", total_files)
         reporter.on_started(total_files)

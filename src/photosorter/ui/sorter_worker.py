@@ -39,11 +39,13 @@ class SorterWorker(QThread):
         settings: AppSettings,
         cancellation_token: CancellationToken,
         parent=None,
+        max_photos: int | None = None,
     ) -> None:
         super().__init__(parent)
         self._sorter_service = sorter_service
         self._settings = settings
         self._cancellation_token = cancellation_token
+        self._max_photos = max_photos
 
     # --- ProgressReporter ---
 
@@ -74,6 +76,7 @@ class SorterWorker(QThread):
                 self._settings,
                 progress_reporter=self,
                 cancellation_token=self._cancellation_token,
+                max_photos=self._max_photos,
             )
         except SourceFolderError as exc:
             self.failed.emit(str(exc))

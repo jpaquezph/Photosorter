@@ -245,6 +245,35 @@ def test_pausing_stops_processing_until_resumed(tmp_path: Path) -> None:
     assert summary.cancelled is False
 
 
+def test_max_photos_caps_the_number_of_files_processed(tmp_path: Path) -> None:
+    for index in range(5):
+        Image.new("RGB", (200, 100), color="red").save(tmp_path / f"foto_{index:02d}.jpg")
+
+    settings = AppSettings(
+        source_path=tmp_path, destination_path=tmp_path / "Organizadas", recursive=False
+    )
+    service = _build_sorter_service(_FixedConflictPrompt(ConflictDecision(ConflictResolution.SKIP)))
+
+    summary = service.run(settings, max_photos=2)
+
+    assert summary.total_files == 2
+    assert summary.processed_files == 2
+
+
+def test_max_photos_none_means_no_cap(tmp_path: Path) -> None:
+    for index in range(3):
+        Image.new("RGB", (200, 100), color="red").save(tmp_path / f"foto_{index:02d}.jpg")
+
+    settings = AppSettings(
+        source_path=tmp_path, destination_path=tmp_path / "Organizadas", recursive=False
+    )
+    service = _build_sorter_service(_FixedConflictPrompt(ConflictDecision(ConflictResolution.SKIP)))
+
+    summary = service.run(settings, max_photos=None)
+
+    assert summary.total_files == 3
+
+
 def test_logs_key_processing_events(tmp_path: Path, caplog) -> None:  # noqa: ANN001
     Image.new("RGB", (200, 100), color="red").save(tmp_path / "a.jpg")
     settings = AppSettings(

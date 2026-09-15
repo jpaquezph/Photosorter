@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from photosorter import beta_limiter  # BETA: sacar este import al retirar el limite
 from photosorter.application.cancellation_token import CancellationToken
 from photosorter.application.sorter_service import SorterService
 from photosorter.domain.models.app_settings import AppSettings
@@ -627,9 +628,20 @@ class MainWindow(QMainWindow):
     # --- Seleccion de carpeta ---
 
     def _choose_folder(self) -> None:
+        # BETA: sacar este chequeo (y _show_beta_limit_dialog) al retirar el limite.
+        if beta_limiter.has_reached_limit():
+            self._show_beta_limit_dialog()
+            return
         folder = QFileDialog.getExistingDirectory(self, "Seleccionar carpeta")
         if folder:
             self._folder_edit.setText(folder)
+
+    def _show_beta_limit_dialog(self) -> None:  # BETA: sacar este metodo al retirar el limite
+        box = QMessageBox(
+            QMessageBox.Icon.Information, "PhotoSorter", beta_limiter.LIMIT_MESSAGE, parent=self
+        )
+        box.addButton("Cerrar", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
 
     # --- Inicio / cancelacion ---
 
@@ -656,6 +668,11 @@ class MainWindow(QMainWindow):
         self._status_label.setText("Estado: cancelando...")
 
     def _start_processing(self) -> None:
+        # BETA: sacar este chequeo al retirar el limite.
+        if beta_limiter.has_reached_limit():
+            self._show_beta_limit_dialog()
+            return
+
         folder_text = self._folder_edit.text().strip()
         if not folder_text:
             self._warn("Primero elegí una carpeta.")
@@ -691,7 +708,14 @@ class MainWindow(QMainWindow):
         self._refresh_gallery_pixmaps()
         self._update_gallery_nav_buttons()
 
-        self._worker = SorterWorker(sorter_service, settings, self._cancellation_token, self)
+        self._worker = SorterWorker(
+            sorter_service,
+            settings,
+            self._cancellation_token,
+            self,
+            # BETA: sacar este argumento al retirar el limite.
+            max_photos=beta_limiter.remaining_allowance(),
+        )
         self._worker.started.connect(self._on_started)
         self._worker.file_started.connect(self._on_file_started)
         self._worker.file_completed.connect(self._on_file_completed)
@@ -746,6 +770,8 @@ class MainWindow(QMainWindow):
     def _on_finished(self, summary: ProcessingSummary) -> None:
         self._reset_controls_after_run()
         self._eta_label.setText("Tiempo restante estimado: --:--")
+        # BETA: sacar esta linea al retirar el limite.
+        beta_limiter.register_processed(summary.processed_files)
 
         if summary.total_files == 0:
             self._status_label.setText("Estado: sin fotografías")
@@ -769,6 +795,12 @@ class MainWindow(QMainWindow):
                 f"Horizontales: {summary.horizontal_count}\n"
                 f"Cuadradas: {summary.square_count}\n"
                 f"Errores: {summary.failed_files}"
+            )
+
+        # BETA: sacar este bloque al retirar el limite.
+        if beta_limiter.has_reached_limit():
+            self._summary_label.setText(
+                self._summary_label.text() + "\n\n" + beta_limiter.LIMIT_MESSAGE
             )
 
         self._open_results_button.show()
