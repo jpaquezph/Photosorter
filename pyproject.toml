@@ -29,6 +29,11 @@ packages = ["src/photosorter"]
 "src/photosorter/resources/icon.png" = "photosorter/resources/icon.png"
 "src/photosorter/resources/icon.ico" = "photosorter/resources/icon.ico"
 
+# La landing page vive en el repo pero no forma parte de la app: se excluye
+# del sdist (el wheel y el .exe ya toman solo src/photosorter).
+[tool.hatch.build.targets.sdist]
+exclude = ["/photo-sorter-landing-page-design"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
