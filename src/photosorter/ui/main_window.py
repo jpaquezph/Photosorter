@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, QUrl, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -16,6 +16,7 @@ from PySide6.QtGui import (
     QResizeEvent,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFileDialog,
     QFrame,
@@ -55,6 +56,7 @@ from photosorter.infrastructure.filesystem.default_file_scanner import DefaultFi
 from photosorter.infrastructure.image.composite_image_reader import CompositeImageReader
 from photosorter.infrastructure.image.raw_image_reader import RawImageReader
 from photosorter.infrastructure.image.standard_image_reader import StandardImageReader
+from photosorter.ui.assets import LOGO_PATH
 from photosorter.ui.conflict_dialog import ConflictDialog
 from photosorter.ui.qt_conflict_prompt import QtConflictPrompt
 from photosorter.ui.sorter_worker import SorterWorker
@@ -97,6 +99,10 @@ MEDIA_SECTION_AREA_FRACTION = 0.40
 GALLERY_COLUMNS = 3
 GALLERY_ROWS = 2
 GALLERY_SIZE = GALLERY_COLUMNS * GALLERY_ROWS  # 6 miniaturas, seccion "Grilla de Miniaturas"
+# Marca de agua de "Procesando ahora" mientras no hay ninguna foto cargada:
+# el logo, bien tenue, en lugar de la vista previa.
+PLACEHOLDER_OPACITY = 0.16
+PLACEHOLDER_SIZE_FRACTION = 0.8  # alto del logo respecto del alto de la vista previa
 
 # Stylesheet a nivel de aplicacion (ver __main__.py): asi los dialogos
 # (ConflictDialog, QMessageBox) heredan la misma paleta sin duplicar reglas.
@@ -332,6 +338,8 @@ class MainWindow(QMainWindow):
         # None = seguir mostrando la ultima foto procesada; si el usuario
         # hace click en una miniatura, queda fijada esa seleccion.
         self._selected_index: int | None = None
+        # ((alto de la vista previa, device pixel ratio), pixmap) de la marca de agua.
+        self._placeholder_cache: tuple[tuple[int, float], QPixmap] | None = None
 
         self._build_ui()
         self._apply_media_sizes()
@@ -344,7 +352,7 @@ class MainWindow(QMainWindow):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        self._title_bar = TitleBar("PhotoSorter")
+        self._title_bar = TitleBar("PhotoSorter", LOGO_PATH)
         self._title_bar.minimize_clicked.connect(self.showMinimized)
         self._title_bar.maximize_clicked.connect(self._toggle_maximize)
         self._title_bar.close_clicked.connect(self.close)
@@ -616,14 +624,41 @@ class MainWindow(QMainWindow):
         preview_area = total_area * PREVIEW_AREA_FRACTION
         preview_h = max(int((preview_area * 3 / 4) ** 0.5), 60)
         preview_w = max(int(preview_h * 4 / 3), 80)
-        self._preview_label.setFixedSize(preview_w, preview_h)
-
         thumb_side = max(int((total_area * THUMBNAIL_AREA_FRACTION) ** 0.5), 28)
-        for cell in self._thumbnail_cells:
-            cell.setFixedSize(thumb_side, thumb_side)
+        self._set_media_sizes(preview_w, preview_h, thumb_side)
+
+        # Las fracciones de area no garantizan que todo entre: en ventanas
+        # anchas y bajas (p. ej. maximizada en una pantalla apaisada) la
+        # vista previa + galeria superan el alto disponible y Qt recorta la
+        # vista previa. Si no entra, se achican ambas en la misma proporcion.
+        # Se despachan primero los LayoutRequest pendientes: sin eso el nuevo
+        # tamanio minimo del escenario todavia no llego al layout de la
+        # seccion y la medicion de abajo saldria con los tamanios anteriores.
+        QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+        layout = self._media_frame.layout()
+        layout.invalidate()
+        needed = layout.minimumSize()
+        scalable_height = preview_h + GALLERY_ROWS * thumb_side
+        fixed_height = needed.height() - scalable_height
+        fixed_width = needed.width() - preview_w
+        scale = min(
+            (content_height - fixed_height) / scalable_height,
+            (section_width - fixed_width) / preview_w,
+        )
+        if scale < 1:
+            self._set_media_sizes(
+                max(int(preview_w * scale), 80),
+                max(int(preview_h * scale), 60),
+                max(int(thumb_side * scale), 28),
+            )
 
         self._refresh_preview_pixmap()
         self._refresh_gallery_pixmaps()
+
+    def _set_media_sizes(self, preview_w: int, preview_h: int, thumb_side: int) -> None:
+        self._preview_label.setFixedSize(preview_w, preview_h)
+        for cell in self._thumbnail_cells:
+            cell.setFixedSize(thumb_side, thumb_side)
 
     # --- Seleccion de carpeta ---
 
@@ -842,6 +877,14 @@ class MainWindow(QMainWindow):
 
     def _refresh_preview_pixmap(self) -> None:
         index = self._current_preview_index()
+        if index is None:
+            # Todavia no se cargo ninguna foto: marca de agua con el logo.
+            placeholder = self._placeholder_pixmap(self._preview_label.height())
+            if not placeholder.isNull():
+                self._preview_label.setText("")
+                self._preview_label.setPixmap(placeholder)
+                return
+
         image = self._history[index][1] if index is not None else None
         if image is None:
             # No llamar setPixmap aca: un QPixmap nulo pisa el texto (QLabel
@@ -857,6 +900,32 @@ class MainWindow(QMainWindow):
         )
         self._preview_label.setText("")
         self._preview_label.setPixmap(pixmap)
+
+    def _placeholder_pixmap(self, preview_height: int) -> QPixmap:
+        # Se cachea por tamanio: se vuelve a pedir en cada resize de la
+        # ventana mientras no haya fotos cargadas.
+        ratio = self.devicePixelRatioF()
+        key = (preview_height, ratio)
+        if self._placeholder_cache is not None and self._placeholder_cache[0] == key:
+            return self._placeholder_cache[1]
+
+        logo = QPixmap(str(LOGO_PATH))
+        if logo.isNull():
+            return QPixmap()
+        logo = logo.scaledToHeight(
+            max(round(preview_height * PLACEHOLDER_SIZE_FRACTION * ratio), 1),
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        faded = QPixmap(logo.size())
+        faded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(faded)
+        painter.setOpacity(PLACEHOLDER_OPACITY)
+        painter.drawPixmap(0, 0, logo)
+        painter.end()
+        faded.setDevicePixelRatio(ratio)
+
+        self._placeholder_cache = (key, faded)
+        return faded
 
     # --- Mini galeria ---
 

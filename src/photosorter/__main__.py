@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from photosorter.ui.assets import ICON_PATH
 from photosorter.ui.main_window import STYLE_SHEET, MainWindow
-
-ICON_PATH = Path(__file__).parent / "resources" / "icon.ico"
 
 
 def main() -> None:

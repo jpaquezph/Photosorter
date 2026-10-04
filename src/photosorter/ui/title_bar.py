@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QMouseEvent, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 # Paleta dark/profesional de main_window.py, duplicada aca a proposito (es
@@ -17,6 +19,7 @@ _CLOSE_BG_HOVER = "#c94850"
 
 BAR_HEIGHT = 34
 _BUTTON_WIDTH = 46
+_LOGO_MARGIN = 3  # aire arriba y abajo del logo dentro de la barra
 
 
 class TitleBar(QWidget):
@@ -33,7 +36,9 @@ class TitleBar(QWidget):
     maximize_clicked = Signal()
     close_clicked = Signal()
 
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, title: str, logo_path: Path | None = None, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("titleBar")
         self.setFixedHeight(BAR_HEIGHT)
@@ -43,10 +48,25 @@ class TitleBar(QWidget):
         layout.setContentsMargins(12, 0, 0, 0)
         layout.setSpacing(0)
 
-        title_label = QLabel(title)
+        title_label = QLabel()
         title_label.setStyleSheet(
             f"color: {_TEXT}; font-weight: bold; background: transparent;"
         )
+        logo = QPixmap(str(logo_path)) if logo_path is not None else QPixmap()
+        if logo.isNull():
+            # Sin logo disponible se cae al nombre en texto.
+            title_label.setText(title)
+        else:
+            # Se escala en pixeles fisicos para que no se vea borroso en
+            # pantallas con escalado (125%, 150%, ...).
+            ratio = self.devicePixelRatioF()
+            logo = logo.scaledToHeight(
+                round((BAR_HEIGHT - 2 * _LOGO_MARGIN) * ratio),
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            logo.setDevicePixelRatio(ratio)
+            title_label.setPixmap(logo)
+            title_label.setToolTip(title)
         layout.addWidget(title_label)
         layout.addStretch(1)
 
