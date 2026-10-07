@@ -1,6 +1,7 @@
-"""Script de un solo uso para generar logo.png / icon.png / icon.ico a partir del logo fuente.
+"""Script de un solo uso para generar logo.png / icon.png / icon.ico / icon.icns a partir del logo fuente.
 
-Ejecutar con: .venv/Scripts/python.exe src/photosorter/resources/_build_icon.py
+Ejecutar con: .venv/Scripts/python.exe src/photosorter/resources/_build_icon.py (Windows)
+o .venv/bin/python src/photosorter/resources/_build_icon.py (macOS/Linux).
 No forma parte del paquete distribuido (no se importa desde la app).
 """
 
@@ -77,8 +78,14 @@ def build_icon() -> None:
     sizes = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
     canvas.save(ico_path, format="ICO", sizes=sizes)
 
+    # Icono nativo de macOS (bundle .app, ver packaging/build_mac.sh). Pillow
+    # escribe el .icns completo (todas las resoluciones) sin depender de
+    # iconutil.
+    icns_path = HERE / "icon.icns"
+    canvas.save(icns_path, format="ICNS")
+
     print(
-        f"OK: {logo_path}, {png_path} y {ico_path} generados "
+        f"OK: {logo_path}, {png_path}, {ico_path} y {icns_path} generados "
         f"({CANVAS_SIZE}x{CANVAS_SIZE} master)."
     )
 

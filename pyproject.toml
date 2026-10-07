@@ -28,6 +28,7 @@ packages = ["src/photosorter"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/photosorter/resources/icon.png" = "photosorter/resources/icon.png"
 "src/photosorter/resources/icon.ico" = "photosorter/resources/icon.ico"
+"src/photosorter/resources/icon.icns" = "photosorter/resources/icon.icns"
 "src/photosorter/resources/logo.png" = "photosorter/resources/logo.png"
 
 # La landing page vive en el repo pero no forma parte de la app: se excluye
